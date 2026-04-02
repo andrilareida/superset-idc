@@ -25,8 +25,9 @@
 # - Set SUPERSET_LOG_LEVEL=debug in docker/.env-local for detailed Superset logs
 # -----------------------------------------------------------------------
 x-superset-user: &superset-user root
-x-superset-volumes: &superset-volumes
+x-superset-volumes:
   # /app/pythonpath_docker will be appended to the PYTHONPATH in the final container
+  &superset-volumes
   - ./docker:/app/docker
   - ./superset:/app/superset
   - ./superset-core:/app/superset-core
@@ -34,6 +35,9 @@ x-superset-volumes: &superset-volumes
   - superset_home:/app/superset_home
   - ./tests:/app/tests
   - superset_data:/app/data
+  # Mount host AWS credentials so the container can call STS/Athena.
+  # On EC2/ECS remove this and use an instance profile / task role instead.
+  - ${HOME}/.aws:/root/.aws:ro
 x-common-build: &common-build
   context: .
   target: ${SUPERSET_BUILD_TARGET:-dev} # can use `dev` (default) or `lean`
@@ -90,9 +94,14 @@ services:
         required: true
       - path: docker/.env-local # optional override
         required: false
+    environment:
+      COGNITO_CLIENT_ID: uunr4kbj0p0r251a2u717jhoi
+      COGNITO_CLIENT_SECRET: r5815dc61m73ns2041cs5sv93aj3u6phk3fm8dl9mhrkqirbpio
+      SUPERSET_PUBLIC_URL: ${SUPERSET_PUBLIC_URL:-http://localhost:8088}
+      IDC_APPLICATION_ARN: ${IDC_APPLICATION_ARN:-}
     build:
       <<: *common-build
-    command: ["/app/docker/docker-bootstrap.sh", "app"]
+    command: [ "/app/docker/docker-bootstrap.sh", "app" ]
     restart: unless-stopped
     ports:
       - ${SUPERSET_PORT:-8088}:8088
@@ -141,12 +150,17 @@ services:
   superset-init:
     build:
       <<: *common-build
-    command: ["/app/docker/docker-init.sh"]
+    command: [ "/app/docker/docker-init.sh" ]
     env_file:
       - path: docker/.env # default
         required: true
       - path: docker/.env-local # optional override
         required: false
+    environment:
+      COGNITO_CLIENT_ID: uunr4kbj0p0r251a2u717jhoi
+      COGNITO_CLIENT_SECRET: r5815dc61m73ns2041cs5sv93aj3u6phk3fm8dl9mhrkqirbpio
+      SUPERSET_PUBLIC_URL: ${SUPERSET_PUBLIC_URL:-http://localhost:8088}
+      IDC_APPLICATION_ARN: ${IDC_APPLICATION_ARN:-}
     depends_on:
       db:
         condition: service_started
@@ -178,8 +192,8 @@ services:
       # Webpack dev server must bind to 0.0.0.0 to be accessible from outside the container
       WEBPACK_DEVSERVER_HOST: "0.0.0.0"
     ports:
-      - "127.0.0.1:${NODE_PORT:-9000}:9000"  # exposing the dynamic webpack dev server
-    command: ["/app/docker/docker-frontend.sh"]
+      - "127.0.0.1:${NODE_PORT:-9000}:9000" # exposing the dynamic webpack dev server
+    command: [ "/app/docker/docker-frontend.sh" ]
     env_file:
       - path: docker/.env # default
         required: true
@@ -190,7 +204,7 @@ services:
   superset-worker:
     build:
       <<: *common-build
-    command: ["/app/docker/docker-bootstrap.sh", "worker"]
+    command: [ "/app/docker/docker-bootstrap.sh", "worker" ]
     env_file:
       - path: docker/.env # default
         required: true
@@ -198,6 +212,9 @@ services:
         required: false
     environment:
       CELERYD_CONCURRENCY: 2
+      COGNITO_CLIENT_ID: uunr4kbj0p0r251a2u717jhoi
+      COGNITO_CLIENT_SECRET: r5815dc61m73ns2041cs5sv93aj3u6phk3fm8dl9mhrkqirbpio
+      IDC_APPLICATION_ARN: ${IDC_APPLICATION_ARN:-}
     restart: unless-stopped
     depends_on:
       superset-init:
@@ -207,7 +224,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
-      test: ["CMD-SHELL", "celery -A superset.tasks.celery_app:app inspect ping -d celery@$$HOSTNAME"]
+      test: [ "CMD-SHELL", "celery -A superset.tasks.celery_app:app inspect ping -d celery@$$HOSTNAME" ]
     # Bump memory limit if processing selenium / thumbnails on superset-worker
     # mem_limit: 2038m
     # mem_reservation: 128M
@@ -215,7 +232,7 @@ services:
   superset-worker-beat:
     build:
       <<: *common-build
-    command: ["/app/docker/docker-bootstrap.sh", "beat"]
+    command: [ "/app/docker/docker-bootstrap.sh", "beat" ]
     env_file:
       - path: docker/.env # default
         required: true
@@ -232,7 +249,7 @@ services:
   superset-tests-worker:
     build:
       <<: *common-build
-    command: ["/app/docker/docker-bootstrap.sh", "worker"]
+    command: [ "/app/docker/docker-bootstrap.sh", "worker" ]
     env_file:
       - path: docker/.env # default
         required: true
@@ -254,7 +271,7 @@ services:
     user: *superset-user
     volumes: *superset-volumes
     healthcheck:
-      test: ["CMD-SHELL", "celery inspect ping -A superset.tasks.celery_app:app -d celery@$$HOSTNAME"]
+      test: [ "CMD-SHELL", "celery inspect ping -A superset.tasks.celery_app:app -d celery@$$HOSTNAME" ]
 
 volumes:
   superset_home:

@@ -79,7 +79,7 @@ x-common-build: &common-build
     BUILD_TRANSLATIONS: ${BUILD_TRANSLATIONS:-false}
 
 services:
-  db-light:
+  db:
     env_file:
       - path: docker/.env # default
         required: true
@@ -112,7 +112,7 @@ services:
         condition: service_completed_successfully
     volumes: *superset-volumes
     environment:
-      DATABASE_HOST: db-light
+      DATABASE_HOST: db
       DATABASE_DB: superset_light
       POSTGRES_DB: superset_light
       SUPERSET_CONFIG_PATH: /app/docker/pythonpath_dev/superset_config_docker_light.py
@@ -130,11 +130,11 @@ services:
         required: false
     user: *superset-user
     depends_on:
-      db-light:
+      db:
         condition: service_started
     volumes: *superset-volumes
     environment:
-      DATABASE_HOST: db-light
+      DATABASE_HOST: db
       DATABASE_DB: superset_light
       POSTGRES_DB: superset_light
       SUPERSET_CONFIG_PATH: /app/docker/pythonpath_dev/superset_config_docker_light.py
@@ -184,15 +184,15 @@ services:
     profiles:
       - test  # Only starts when --profile test is used
     depends_on:
-      db-light:
+      db:
         condition: service_started
     user: *superset-user
     volumes: *superset-volumes
     environment:
-      DATABASE_HOST: db-light
+      DATABASE_HOST: db
       DATABASE_DB: test
       POSTGRES_DB: test
-      SUPERSET__SQLALCHEMY_DATABASE_URI: postgresql+psycopg2://superset:superset@db-light:5432/test
+      SUPERSET__SQLALCHEMY_DATABASE_URI: postgresql+psycopg2://superset:superset@db:5432/test
       SUPERSET_CONFIG: superset_test_config_light
       PYTHONPATH: /app/pythonpath:/app/docker/pythonpath_dev:/app
 
