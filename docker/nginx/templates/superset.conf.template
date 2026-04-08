@@ -52,6 +52,13 @@ server {
         proxy_http_version 1.1;
         port_in_redirect off;
         proxy_connect_timeout 300;
+
+        # OAuth/OIDC flows (e.g. Cognito) produce large response headers
+        # (Set-Cookie + state). The defaults (4k/8k) are too small and
+        # cause "upstream sent too big header" → 502.
+        proxy_buffer_size 16k;
+        proxy_buffers 4 16k;
+        proxy_busy_buffers_size 16k;
     }
 
 }

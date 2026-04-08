@@ -35,9 +35,6 @@ x-superset-volumes:
   - superset_home:/app/superset_home
   - ./tests:/app/tests
   - superset_data:/app/data
-  # Mount host AWS credentials so the container can call STS/Athena.
-  # On EC2/ECS remove this and use an instance profile / task role instead.
-  - ${HOME}/.aws:/root/.aws:ro
 x-common-build: &common-build
   context: .
   target: ${SUPERSET_BUILD_TARGET:-dev} # can use `dev` (default) or `lean`
@@ -95,10 +92,8 @@ services:
       - path: docker/.env-local # optional override
         required: false
     environment:
-      COGNITO_CLIENT_ID: uunr4kbj0p0r251a2u717jhoi
-      COGNITO_CLIENT_SECRET: r5815dc61m73ns2041cs5sv93aj3u6phk3fm8dl9mhrkqirbpio
       SUPERSET_PUBLIC_URL: ${SUPERSET_PUBLIC_URL:-http://localhost:8088}
-      IDC_APPLICATION_ARN: ${IDC_APPLICATION_ARN:-}
+      #IDC_APPLICATION_ARN: ${IDC_APPLICATION_ARN:-}
     build:
       <<: *common-build
     command: [ "/app/docker/docker-bootstrap.sh", "app" ]
@@ -157,8 +152,6 @@ services:
       - path: docker/.env-local # optional override
         required: false
     environment:
-      COGNITO_CLIENT_ID: uunr4kbj0p0r251a2u717jhoi
-      COGNITO_CLIENT_SECRET: r5815dc61m73ns2041cs5sv93aj3u6phk3fm8dl9mhrkqirbpio
       SUPERSET_PUBLIC_URL: ${SUPERSET_PUBLIC_URL:-http://localhost:8088}
       IDC_APPLICATION_ARN: ${IDC_APPLICATION_ARN:-}
     depends_on:
@@ -212,8 +205,6 @@ services:
         required: false
     environment:
       CELERYD_CONCURRENCY: 2
-      COGNITO_CLIENT_ID: uunr4kbj0p0r251a2u717jhoi
-      COGNITO_CLIENT_SECRET: r5815dc61m73ns2041cs5sv93aj3u6phk3fm8dl9mhrkqirbpio
       IDC_APPLICATION_ARN: ${IDC_APPLICATION_ARN:-}
     restart: unless-stopped
     depends_on:
