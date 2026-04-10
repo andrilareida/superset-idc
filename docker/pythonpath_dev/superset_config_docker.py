@@ -118,3 +118,11 @@ OAUTH_PROVIDERS = [
         },
     }
 ]
+
+# ---------------------------------------------------------------------------
+# Debug: log Athena API requests and responses
+# ---------------------------------------------------------------------------
+import logging as _logging
+
+# _logging.getLogger("botocore.endpoint").setLevel(_logging.DEBUG)
+# _logging.getLogger("botocore.parsers").setLevel(_logging.DEBUG)

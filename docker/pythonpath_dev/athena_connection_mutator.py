@@ -55,6 +55,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 import flask
 from flask_login import current_user
 import jwt
+from redis import Redis
 from sqlalchemy.engine.url import URL as SqlaURL
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,45 @@ _SERVICE_ROLE_ARN = os.environ.get("SUPERSET_SERVICE_ROLE_ARN", "")
 
 # Buffer in seconds — treat the token as expired a bit early to avoid races
 _TOKEN_EXPIRY_BUFFER = 60
+
+# Redis instance for sharing Cognito tokens between web and worker processes.
+_token_redis = Redis(
+    host=os.getenv("REDIS_HOST", "redis"),
+    port=int(os.getenv("REDIS_PORT", "6379")),
+    db=1,  # separate DB from session store (db=0)
+)
+_TOKEN_REDIS_PREFIX = "cognito_token:"
+_TOKEN_REDIS_TTL = 3600  # 1 hour
+
+
+def _store_cognito_tokens_in_redis(user_email: str) -> None:
+    """Copy Cognito tokens from the Flask session to Redis for worker access."""
+    id_token = flask.session.get("cognito_id_token")
+    refresh_token = flask.session.get("cognito_refresh_token")
+    username = flask.session.get("cognito_username", "")
+    email = flask.session.get("cognito_email", "")
+    if id_token:
+        import json as _json
+        data = _json.dumps({
+            "cognito_id_token": id_token,
+            "cognito_refresh_token": refresh_token or "",
+            "cognito_username": username,
+            "cognito_email": email,
+        })
+        _token_redis.setex(
+            f"{_TOKEN_REDIS_PREFIX}{user_email}",
+            _TOKEN_REDIS_TTL,
+            data,
+        )
+
+
+def _get_cognito_tokens_from_redis(user_email: str) -> dict[str, str] | None:
+    """Retrieve Cognito tokens from Redis (used by the Celery worker)."""
+    raw = _token_redis.get(f"{_TOKEN_REDIS_PREFIX}{user_email}")
+    if not raw:
+        return None
+    import json as _json
+    return _json.loads(raw)
 
 # Module-level cache for the assumed service-role session.
 _service_session: boto3.Session | None = None
@@ -127,8 +167,17 @@ def _get_service_session() -> boto3.Session:
 
 def _get_current_user_email() -> str | None:
     try:
+        # In the web request context, flask_login.current_user is set.
         if current_user and not current_user.is_anonymous:
             return current_user.email or None
+    except RuntimeError:
+        pass
+    # In the Celery worker context, Superset uses g.user via override_user.
+    try:
+        from flask import g
+        user = getattr(g, "user", None)
+        if user and not user.is_anonymous:
+            return user.email or None
     except RuntimeError:
         pass
     return None
@@ -163,22 +212,41 @@ def _compute_secret_hash(username: str, client_id: str, client_secret: str) -> s
     ).decode("utf-8")
 
 
-def _refresh_cognito_id_token() -> str | None:
+def _refresh_cognito_id_token(
+    refresh_token: str | None = None,
+    cognito_username: str | None = None,
+    cognito_email: str | None = None,
+    user_email_for_redis: str | None = None,
+) -> str | None:
     """
-    Use the stored OAuth refresh token to obtain a fresh Cognito ID token.
+    Use a refresh token to obtain a fresh Cognito ID token.
 
-    Updates the Flask session with the new tokens. Returns the new ID token
-    or None if refresh is not possible.
+    When called without arguments, reads tokens from the Flask session
+    (web context). Pass explicit values for the worker context (from Redis).
 
-    Cognito requires a SECRET_HASH computed from the username, but the
-    expected "username" depends on the User Pool sign-in configuration
-    (sub UUID vs email alias). We try the sub first, then fall back to
-    the email if Cognito rejects the hash.
+    Updates the Flask session (if available) and Redis with the new token.
+    Returns the new ID token or None if refresh is not possible.
     """
-    refresh_token = flask.session.get("cognito_refresh_token")
+    # Resolve parameters from Flask session when not explicitly provided
+    if refresh_token is None:
+        try:
+            refresh_token = flask.session.get("cognito_refresh_token")
+        except RuntimeError:
+            pass
     if not refresh_token:
-        logger.info("No refresh token in session — cannot refresh Cognito ID token")
+        logger.info("No refresh token available — cannot refresh Cognito ID token")
         return None
+
+    if cognito_username is None:
+        try:
+            cognito_username = flask.session.get("cognito_username", "")
+        except RuntimeError:
+            cognito_username = ""
+    if cognito_email is None:
+        try:
+            cognito_email = flask.session.get("cognito_email", "")
+        except RuntimeError:
+            cognito_email = ""
 
     client_id = os.environ.get("COGNITO_CLIENT_ID", "")
     client_secret = os.environ.get("COGNITO_CLIENT_SECRET", "")
@@ -186,12 +254,7 @@ def _refresh_cognito_id_token() -> str | None:
         logger.warning("COGNITO_CLIENT_ID not set — cannot refresh token")
         return None
 
-    # Build the list of usernames to try for SECRET_HASH computation.
-    # Cognito User Pools may expect the sub UUID or the email alias
-    # depending on pool configuration.
     candidates: list[str] = []
-    cognito_username = flask.session.get("cognito_username", "")
-    cognito_email = flask.session.get("cognito_email", "")
     if cognito_username:
         candidates.append(cognito_username)
     if cognito_email and cognito_email != cognito_username:
@@ -199,7 +262,7 @@ def _refresh_cognito_id_token() -> str | None:
 
     if not candidates:
         logger.warning(
-            "Neither cognito_username nor cognito_email in session — "
+            "Neither cognito_username nor cognito_email available — "
             "cannot compute SECRET_HASH"
         )
         return None
@@ -227,7 +290,26 @@ def _refresh_cognito_id_token() -> str | None:
             result = response.get("AuthenticationResult", {})
             new_id_token = result.get("IdToken")
             if new_id_token:
-                flask.session["cognito_id_token"] = new_id_token
+                # Update Flask session if available
+                try:
+                    flask.session["cognito_id_token"] = new_id_token
+                except RuntimeError:
+                    pass
+                # Update Redis so the worker picks up the fresh token
+                email_key = user_email_for_redis or cognito_email
+                if email_key:
+                    import json as _json
+                    data = _json.dumps({
+                        "cognito_id_token": new_id_token,
+                        "cognito_refresh_token": refresh_token,
+                        "cognito_username": cognito_username or "",
+                        "cognito_email": cognito_email or "",
+                    })
+                    _token_redis.setex(
+                        f"{_TOKEN_REDIS_PREFIX}{email_key}",
+                        _TOKEN_REDIS_TTL,
+                        data,
+                    )
                 logger.info(
                     "Refreshed Cognito ID token via REFRESH_TOKEN_AUTH "
                     "(username=%s)",
@@ -252,22 +334,48 @@ def _refresh_cognito_id_token() -> str | None:
     return None
 
 
-def _get_cognito_id_token() -> str | None:
+def _get_cognito_id_token(user_email: str | None = None) -> str | None:
     """
-    Read the Cognito ID token from the Flask session.
+    Read the Cognito ID token from the Flask session or Redis.
 
+    In the web request context, reads from the Flask session.
+    In the Celery worker context (no session), falls back to Redis.
     If the token is expired, attempt to refresh it using the stored refresh
     token. Returns None if no valid token is available.
     """
-    token = flask.session.get("cognito_id_token")
-    if not token:
-        return None
+    # Try Flask session first (web request context)
+    token = None
+    try:
+        token = flask.session.get("cognito_id_token")
+    except RuntimeError:
+        pass
 
-    if _is_token_expired(token):
-        logger.info("Cognito ID token is expired — attempting refresh")
-        token = _refresh_cognito_id_token()
+    if token:
+        if _is_token_expired(token):
+            logger.info("Cognito ID token is expired — attempting refresh")
+            token = _refresh_cognito_id_token()
+        return token
 
-    return token
+    # Fall back to Redis (worker context)
+    if user_email:
+        redis_data = _get_cognito_tokens_from_redis(user_email)
+        if redis_data:
+            token = redis_data.get("cognito_id_token")
+            if token and not _is_token_expired(token):
+                logger.info("Retrieved Cognito ID token from Redis for %s", user_email)
+                return token
+            # Token expired — try refreshing using the refresh token from Redis
+            logger.info("Cognito token from Redis is expired for %s — attempting refresh", user_email)
+            token = _refresh_cognito_id_token(
+                refresh_token=redis_data.get("cognito_refresh_token"),
+                cognito_username=redis_data.get("cognito_username"),
+                cognito_email=redis_data.get("cognito_email"),
+                user_email_for_redis=user_email,
+            )
+            if token:
+                return token
+
+    return None
 
 
 def _exchange_token_with_idc(id_token: str) -> str:
@@ -455,22 +563,37 @@ def athena_db_connection_mutator(
         )
         return uri, connect_args
 
-    # Get the Cognito ID token from the Flask session
-    id_token = _get_cognito_id_token()
+    # Get the Cognito ID token from the Flask session or Redis
+    id_token = _get_cognito_id_token(user_email=user_email)
+
+    # In web context, sync tokens to Redis so the Celery worker can use them
+    try:
+        if flask.session.get("cognito_id_token"):
+            _store_cognito_tokens_in_redis(user_email)
+    except RuntimeError:
+        pass
+
     if not id_token:
         logger.warning(
             "athena_mutator: no Cognito ID token in session for %s "
-            "— falling back to ambient credentials",
+            "— falling back to ambient credentials. "
+            "Likely cause: tokens were not replicated to Redis at login. "
+            "Ensure CognitoSecurityManager calls "
+            "_store_cognito_tokens_in_redis() and the user re-authenticates.",
             user_email,
         )
         return uri, connect_args
 
-    # Cache STS credentials in the session, keyed by the Cognito ID token.
+    # Cache STS credentials, keyed by the Cognito ID token.
     # CreateTokenWithIAM with jwt-bearer grant may reject a token that has
     # already been exchanged, so we must avoid calling it twice with the
     # same assertion.  We also cache the STS creds to skip the AssumeRole
     # round-trip when the token hasn't changed.
-    cached = flask.session.get("athena_cached_creds") or {}
+    # Use Redis for caching so both web and worker processes can share.
+    import json as _json
+    cache_key = f"athena_creds:{user_email}"
+    cached_raw = _token_redis.get(cache_key)
+    cached = _json.loads(cached_raw) if cached_raw else {}
     cached_token = cached.get("id_token")
     cached_expiry = cached.get("expiry", 0)
 
@@ -484,7 +607,7 @@ def athena_db_connection_mutator(
         # Cache for slightly less than the STS credential lifetime (1h)
         creds["id_token"] = id_token
         creds["expiry"] = time.time() + 3500  # ~58 min
-        flask.session["athena_cached_creds"] = creds
+        _token_redis.setex(cache_key, 3500, _json.dumps(creds))
 
     # Build query params for the new URL
     query_params: dict[str, str] = {
@@ -492,31 +615,31 @@ def athena_db_connection_mutator(
         "aws_session_token": creds["aws_session_token"],
     }
 
-    # Preserve non-credential query params from the original URI (e.g. schema/catalog)
-    if "?" in uri_str:
-        for param in uri_str.split("?", 1)[1].split("&"):
-            if "=" in param and not param.startswith(
-                ("aws_access_key_id=", "aws_secret_access_key=", "aws_session_token=",
-                 "s3_staging_dir=")
-            ):
-                k, v = param.split("=", 1)
-                query_params[k] = v
+    # Preserve non-credential query params from the original URI (e.g. catalog_name)
+    # Read from the parsed URL object to avoid URL-encoding issues.
+    original_query = dict(getattr(uri, "query", {}))
+    for k, v in original_query.items():
+        if k not in ("aws_access_key_id", "aws_secret_access_key",
+                      "aws_session_token", "s3_staging_dir"):
+            query_params[k] = v
 
     new_url = SqlaURL.create(
-        drivername=getattr(uri, "host", "awsathena+rest"),
+        drivername=getattr(uri, "drivername", "awsathena+rest"),
         username=creds["aws_access_key_id"],
         password=creds["aws_secret_access_key"],
         host=getattr(uri, "host", None),
         database=getattr(uri, "database", None),
         port=getattr(uri, "port", 443),
-        query=query_params
+        query=query_params,
     )
 
     logger.info(
-        "athena_mutator: rewrote URI for user %s — database=%s query_keys=%s",
+        "athena_mutator: rewrote URI for user %s — uri=%s",
         user_email,
-        getattr(new_url, "database", None),
-        list(query_params.keys()),
+        re.sub(r"://[^:]+:[^@]+@", "://***:***@", re.sub(r"(aws_session_token=)[^&]+", r"\1***", str(new_url)))
     )
-
+    logger.info(
+        "Connection arguments: \n %s",
+        _json.dumps(connect_args, indent=2, default=str),
+    )
     return new_url, connect_args

@@ -102,6 +102,8 @@ class ExecuteSqlCommand(BaseCommand):
                 self._execution_context.set_query(query)  # type: ignore
                 status = SqlJsonExecutionStatus.QUERY_ALREADY_CREATED
             else:
+                if query is not None:
+                    self._remove_stale_query(query)
                 status = self._run_sql_json_exec_from_scratch()
 
             self._execution_context_convertor.set_payload(
@@ -138,6 +140,26 @@ class ExecuteSqlCommand(BaseCommand):
             QueryStatus.PENDING,
             QueryStatus.TIMED_OUT,
         ]
+
+    def _remove_stale_query(self, query: Query) -> None:
+        """
+        Remove a previous query record whose client_id will be reused.
+
+        When the frontend retries a query it may send the same client_id.
+        If the earlier attempt already has a terminal status (FAILED, SUCCESS,
+        STOPPED) the record must be removed so the new INSERT does not violate
+        the unique constraint on client_id.
+        """
+        try:
+            db.session.delete(query)
+            db.session.flush()
+        except SQLAlchemyError:
+            logger.exception(
+                "Failed to remove stale query %s (client_id=%s)",
+                query.id,
+                query.client_id,
+            )
+            db.session.rollback()
 
     def _run_sql_json_exec_from_scratch(self) -> SqlJsonExecutionStatus:
         self._execution_context.set_database(self._get_the_query_db())

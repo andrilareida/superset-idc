@@ -93,6 +93,14 @@ class CognitoSecurityManager(SupersetSecurityManager):
         flask_session["cognito_username"] = me.get("sub", username)
         flask_session["cognito_email"] = me.get("email", username)
 
+        # Replicate tokens to Redis so the Celery worker (which has no
+        # Flask session) can retrieve them for the Athena TIP flow.
+        from athena_connection_mutator import _store_cognito_tokens_in_redis
+
+        user_email = me.get("email", username)
+        if user_email:
+            _store_cognito_tokens_in_redis(user_email)
+
         return {
             "username": username,
             "email": me.get("email", ""),
