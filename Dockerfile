@@ -20,8 +20,8 @@
 ######################################################################
 ARG PY_VER=3.11.14-slim-trixie
 
-# If BUILDPLATFORM is null, set it to 'amd64' (or leave as is otherwise).
-ARG BUILDPLATFORM=${BUILDPLATFORM:-amd64}
+# BUILDPLATFORM is automatically provided by BuildKit/Podman.
+# Do not redeclare it here as Podman treats it as a reserved ARG.
 
 # Include translations in the final build
 ARG BUILD_TRANSLATIONS="false"
