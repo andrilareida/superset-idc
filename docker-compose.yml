@@ -25,8 +25,9 @@
 # - Set SUPERSET_LOG_LEVEL=debug in docker/.env-local for detailed Superset logs
 # -----------------------------------------------------------------------
 x-superset-user: &superset-user root
-x-superset-volumes: &superset-volumes
+x-superset-volumes:
   # /app/pythonpath_docker will be appended to the PYTHONPATH in the final container
+  &superset-volumes
   - ./docker:/app/docker
   - ./superset:/app/superset
   - ./superset-core:/app/superset-core
@@ -34,6 +35,7 @@ x-superset-volumes: &superset-volumes
   - superset_home:/app/superset_home
   - ./tests:/app/tests
   - superset_data:/app/data
+  - ./docker/jdbc-drivers:/app/jdbc-drivers
 x-common-build: &common-build
   context: .
   target: ${SUPERSET_BUILD_TARGET:-dev} # can use `dev` (default) or `lean`

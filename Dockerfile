@@ -245,7 +245,8 @@ FROM python-common AS dev
 RUN /app/docker/apt-install.sh \
     git \
     pkg-config \
-    default-libmysqlclient-dev
+    default-libmysqlclient-dev \
+    default-jre-headless
 
 # Copy development requirements and install them
 COPY requirements/*.txt requirements/
