@@ -727,6 +727,10 @@ pyasn1-modules==0.4.2
     #   -c requirements/base-constraint.txt
     #   google-auth
     #   python-ldap
+PyAthena==3.30.1
+
+PyAthenaJDBC>=3.0.1
+
 pycparser==2.22
     # via
     #   -c requirements/base-constraint.txt

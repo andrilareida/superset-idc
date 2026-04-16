@@ -121,6 +121,7 @@ cache/
 docker/*local*
 docker/superset-websocket/config.json
 docker-compose.override.yml
+docker/jdbc-drivers
 
 .temp_cache
 
