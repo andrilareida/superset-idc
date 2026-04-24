@@ -44,7 +44,7 @@ import os
 from flask_appbuilder.security.manager import AUTH_OAUTH
 from redis import Redis
 
-from athena_connection_mutator import athena_db_connection_mutator
+from athena_rest_connection_mutator import athena_rest_connection_mutator as mutator
 from custom_sso_security_manager import CognitoSecurityManager
 
 # ---------------------------------------------------------------------------
@@ -111,7 +111,7 @@ _redirect_uri = f"{_public_url}/oauth-authorized/cognito"
 #   IDENTITY_CENTER_ISSUER_URL - IAM Identity Center issuer URL
 #   AWS_REGION                 - AWS region (default: eu-central-1)
 # ---------------------------------------------------------------------------
-DB_CONNECTION_MUTATOR = athena_db_connection_mutator
+DB_CONNECTION_MUTATOR = mutator
 
 OAUTH_PROVIDERS = [
     {
@@ -131,119 +131,3 @@ OAUTH_PROVIDERS = [
         },
     }
 ]
-
-# ---------------------------------------------------------------------------
-# Monkey-patch PyAthenaJDBC dialect to use SHOW/DESCRIBE instead of
-# information_schema queries.  information_schema does not exist in
-# S3 Table Catalogs, so the default queries fail with INTERNAL_ERROR
-# or CATALOG_NOT_FOUND.
-# ---------------------------------------------------------------------------
-_patch_logger = logging.getLogger("pyathenajdbc.sqlalchemy_athena.patch")
-
-
-def _patched_get_schema_names(self, connection, **kw):
-    query = "SHOW DATABASES"
-    _patch_logger.info("get_schema_names: %s", query)
-    try:
-        result = [row[0] for row in connection.execute(query).fetchall()]
-        _patch_logger.info("get_schema_names returned %d schemas: %s", len(result), result)
-        return result
-    except Exception as e:
-        _patch_logger.warning(
-            "get_schema_names FAILED (%s), falling back to SHOW NAMESPACES: %s",
-            query, e,
-        )
-    # Fallback: try SHOW NAMESPACES (S3 Table Catalog terminology)
-    try:
-        query2 = "SHOW NAMESPACES"
-        result = [row[0] for row in connection.execute(query2).fetchall()]
-        _patch_logger.info("get_schema_names (SHOW NAMESPACES) returned %d: %s", len(result), result)
-        return result
-    except Exception as e2:
-        _patch_logger.warning("SHOW NAMESPACES also failed: %s", e2)
-    # Last resort: return the schema from the connection URL
-    try:
-        raw_conn = self._raw_connection(connection)
-        schema = getattr(raw_conn, "schema_name", None)
-        if schema:
-            _patch_logger.info("get_schema_names fallback to connection schema: %s", schema)
-            return [schema]
-    except Exception:
-        pass
-    _patch_logger.error("get_schema_names: all methods failed, returning empty list")
-    return []
-
-
-def _patched_get_table_names(self, connection, schema=None, **kw):
-    raw_connection = self._raw_connection(connection)
-    schema = schema if schema else raw_connection.schema_name
-    query = 'SHOW TABLES IN "{0}"'.format(schema)
-    _patch_logger.info("get_table_names (schema=%s): %s", schema, query)
-    try:
-        result = [row[0] for row in connection.execute(query).fetchall()]
-        _patch_logger.info("get_table_names returned %d tables: %s", len(result), result)
-        return result
-    except Exception as e:
-        _patch_logger.error("get_table_names FAILED (schema=%s): %s", schema, e)
-        raise
-
-
-def _patched_get_columns(self, connection, table_name, schema=None, **kw):
-    raw_connection = self._raw_connection(connection)
-    schema = schema if schema else raw_connection.schema_name
-    query = 'DESCRIBE "{0}"."{1}"'.format(schema, table_name)
-    _patch_logger.info("get_columns: %s", query)
-    try:
-        from sqlalchemy import types as sa_types
-
-        columns = []
-        for row in connection.execute(query).fetchall():
-            col_name = row[0]
-            col_type = row[1] if len(row) > 1 else "string"
-            if not col_name or col_name.startswith("#") or col_name.strip() == "":
-                continue
-            col_name = col_name.strip()
-            col_type = col_type.strip() if col_type else "string"
-            columns.append(
-                {
-                    "name": col_name,
-                    "type": sa_types.NullType(),
-                    "nullable": True,
-                    "default": None,
-                    "ordinal_position": len(columns) + 1,
-                    "comment": row[2].strip() if len(row) > 2 and row[2] else None,
-                }
-            )
-        _patch_logger.info(
-            "get_columns returned %d columns for %s.%s",
-            len(columns), schema, table_name,
-        )
-        return columns
-    except Exception as e:
-        _patch_logger.error("get_columns FAILED (%s.%s): %s", schema, table_name, e)
-        raise
-
-
-try:
-    from pyathenajdbc.sqlalchemy_athena import AthenaDialect
-
-    # Also patch create_connect_args to log final JDBC properties
-    _original_create_connect_args = AthenaDialect.create_connect_args
-
-    def _patched_create_connect_args(self, url):
-        args, opts = _original_create_connect_args(self, url)
-        safe_opts = {
-            k: ("***" if "token" in k.lower() or "secret" in k.lower()
-                 or "password" in k.lower() else v)
-            for k, v in opts.items()
-        }
-        _patch_logger.info("JDBC create_connect_args opts: %s", safe_opts)
-        return args, opts
-
-    AthenaDialect.get_schema_names = _patched_get_schema_names
-    AthenaDialect.get_table_names = _patched_get_table_names
-    AthenaDialect.get_columns = _patched_get_columns
-    AthenaDialect.create_connect_args = _patched_create_connect_args
-    _patch_logger.info("Patched AthenaDialect: information_schema -> SHOW/DESCRIBE")
-except ImportError:
-    _patch_logger.warning("PyAthenaJDBC not installed — dialect patch skipped")

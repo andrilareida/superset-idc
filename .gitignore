@@ -139,3 +139,6 @@ PROJECT.md
 oxc-custom-build/
 *.code-workspace
 *.duckdb
+
+# TIP flow test cache (contains temporary AWS credentials)
+.tip_cache.json
