@@ -40,12 +40,16 @@
 
 import logging
 import os
+import re
+from typing import Any
 
 from flask_appbuilder.security.manager import AUTH_OAUTH
 from redis import Redis
+from sqlalchemy.engine.url import URL as SqlaURL
 
-from athena_rest_connection_mutator import athena_rest_connection_mutator as mutator
+from athena_rest_connection_mutator import athena_rest_connection_mutator
 from custom_sso_security_manager import CognitoSecurityManager
+from datazone_connection_mutator import datazone_connection_mutator
 
 # ---------------------------------------------------------------------------
 # Logging: suppress noisy third-party loggers, ensure mutator logs are visible
@@ -53,6 +57,7 @@ from custom_sso_security_manager import CognitoSecurityManager
 logging.getLogger("watchdog").setLevel(logging.WARNING)
 logging.getLogger("watchdog.observers.inotify_buffer").setLevel(logging.WARNING)
 logging.getLogger("athena_connection_mutator").setLevel(logging.DEBUG)
+logging.getLogger("datazone_connection_mutator").setLevel(logging.DEBUG)
 logging.getLogger("pyathenajdbc.cursor").setLevel(logging.DEBUG)
 logging.getLogger("pyathenajdbc.sqlalchemy_athena").setLevel(logging.DEBUG)
 
@@ -100,18 +105,78 @@ _public_url = os.getenv("SUPERSET_PUBLIC_URL", "http://localhost").rstrip("/")
 _redirect_uri = f"{_public_url}/oauth-authorized/cognito"
 
 # ---------------------------------------------------------------------------
-# Per-user Athena access via the Athena JDBC driver's built-in DataZoneIdc
-# credentials provider.  The driver handles the full Identity Center SSO
-# flow natively — no manual token exchange or STS calls needed.
+# DB_CONNECTION_MUTATOR — Composite Athena Connection Mutator
 #
-# Required environment variables (set in docker/.env-local):
+# This composite mutator routes Athena connections to the appropriate
+# credential flow based on the CredentialsProvider query parameter:
+#
+#   • CredentialsProvider=DataZoneIdc → DataZone IDC credential chain
+#     (Cognito → STS → SSO-OIDC → DataZone → environment credentials)
+#
+#   • All other Athena connections → TIP credential flow
+#     (Cognito → STS AssumeRoleWithWebIdentity → Lake Formation)
+#
+#   • Non-Athena connections → returned unchanged
+#
+# To use only the DataZone mutator:
+#   DB_CONNECTION_MUTATOR = datazone_connection_mutator
+#
+# To use only the TIP mutator:
+#   DB_CONNECTION_MUTATOR = athena_rest_connection_mutator
+#
+# To use both (default — routes automatically):
+#   DB_CONNECTION_MUTATOR = composite_connection_mutator
+#
+# Required environment variables for DataZone flow (docker/.env-local):
+#   OIDC_ROLE_ARN              - IAM role trusted by Cognito for web identity
+#   IDC_APPLICATION_ARN        - Identity Center application ARN
 #   DATAZONE_DOMAIN_ID         - DataZone domain identifier
 #   DATAZONE_ENVIRONMENT_ID    - DataZone environment identifier
-#   DATAZONE_DOMAIN_REGION     - AWS region of the DataZone domain
-#   IDENTITY_CENTER_ISSUER_URL - IAM Identity Center issuer URL
 #   AWS_REGION                 - AWS region (default: eu-central-1)
+#
+# Required environment variables for TIP flow (docker/.env-local):
+#   USER_ENHANCED_ROLE_ARN     - IAM role for Lake Formation access
 # ---------------------------------------------------------------------------
-DB_CONNECTION_MUTATOR = mutator
+
+_ATHENA_DIALECT_RE = re.compile(r"awsathena", re.IGNORECASE)
+
+
+def composite_connection_mutator(
+    uri: SqlaURL,
+    connect_args: dict[str, Any],
+    effective_username: str | None,
+    security_manager: Any,
+    source: str | None,
+) -> tuple[SqlaURL, dict[str, Any]]:
+    """Composite Superset DB_CONNECTION_MUTATOR that routes to the correct flow.
+
+    Routing logic:
+      1. Non-Athena connections are returned unchanged immediately.
+      2. Athena connections with ``CredentialsProvider=DataZoneIdc`` in the
+         query parameters are routed to the DataZone IDC credential chain.
+      3. All other Athena connections are routed to the TIP credential flow
+         (Lake Formation row/column-level security).
+    """
+    # Non-Athena connections pass through unchanged
+    drivername = getattr(uri, "drivername", "") or ""
+    if not _ATHENA_DIALECT_RE.search(drivername):
+        return uri, connect_args
+
+    # Check for DataZoneIdc credential provider in query params
+    query_params: dict[str, Any] = dict(getattr(uri, "query", {}))
+    credentials_provider = query_params.get("CredentialsProvider", "")
+    if credentials_provider.lower() == "datazoneidc":
+        return datazone_connection_mutator(
+            uri, connect_args, effective_username, security_manager, source
+        )
+
+    # Default: route to TIP mutator for Lake Formation access
+    return athena_rest_connection_mutator(
+        uri, connect_args, effective_username, security_manager, source
+    )
+
+
+DB_CONNECTION_MUTATOR = composite_connection_mutator
 
 OAUTH_PROVIDERS = [
     {
