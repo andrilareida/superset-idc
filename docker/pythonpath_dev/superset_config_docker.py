@@ -170,10 +170,7 @@ def composite_connection_mutator(
             uri, connect_args, effective_username, security_manager, source
         )
 
-    # Default: route to TIP mutator for Lake Formation access
-    return athena_rest_connection_mutator(
-        uri, connect_args, effective_username, security_manager, source
-    )
+    return uri
 
 
 DB_CONNECTION_MUTATOR = composite_connection_mutator

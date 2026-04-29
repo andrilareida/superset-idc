@@ -864,13 +864,12 @@ def _get_environment_credentials(
         ) from exc
 
     # Extract credentials from the response
-    env_creds = response.get("credentials", {})
-    # The response may nest credentials under different structures;
-    # handle the standard GetEnvironmentCredentials response format
-    access_key_id = env_creds.get("accessKeyId", "")
-    secret_access_key = env_creds.get("secretAccessKey", "")
-    session_token = env_creds.get("sessionToken", "")
-    expiration = env_creds.get("expiration", "")
+    # GetEnvironmentCredentials returns accessKeyId, secretAccessKey,
+    # sessionToken, and expiration at the top level of the response dict.
+    access_key_id = response.get("accessKeyId", "")
+    secret_access_key = response.get("secretAccessKey", "")
+    session_token = response.get("sessionToken", "")
+    expiration = response.get("expiration", "")
 
     logger.info(
         "Step 4 (GetEnvironmentCredentials) succeeded — "
