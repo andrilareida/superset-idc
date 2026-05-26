@@ -48,7 +48,7 @@ from redis import Redis
 from sqlalchemy.engine.url import URL as SqlaURL
 
 from athena_rest_connection_mutator import athena_rest_connection_mutator
-from custom_sso_security_manager import CognitoSecurityManager
+from custom_sso_security_manager import CustomSsoSecurityManager
 from datazone_connection_mutator import datazone_connection_mutator
 
 # ---------------------------------------------------------------------------
@@ -63,7 +63,7 @@ logging.getLogger("pyathenajdbc.sqlalchemy_athena").setLevel(logging.DEBUG)
 
 LOG_LEVEL = "INFO"
 
-CUSTOM_SECURITY_MANAGER = CognitoSecurityManager
+CUSTOM_SECURITY_MANAGER = CustomSsoSecurityManager
 
 # ---------------------------------------------------------------------------
 # Server-side sessions (Redis)

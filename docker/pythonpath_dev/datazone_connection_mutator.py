@@ -33,8 +33,8 @@ Flow:
   4. Rewrite the SQLAlchemy URI with the per-user environment
      credentials so PyAthena connects on behalf of the user.
 
-Each step is cached in Redis (db=2) with appropriate TTLs to avoid
-repeating the full chain on every query.
+Each step is cached via Flask-Caching (Superset's cache_manager) with
+appropriate TTLs to avoid repeating the full chain on every query.
 
 Required environment variables (set in docker/.env-local):
   OIDC_ROLE_ARN           - IAM role trusted by the Cognito identity
@@ -46,14 +46,11 @@ Required environment variables (set in docker/.env-local):
   DATAZONE_ENVIRONMENT_ID - Default DataZone environment identifier
                             (fallback when not in connection string).
   AWS_REGION              - AWS region (default: eu-central-1).
-  REDIS_HOST              - Redis hostname (default: redis).
-  REDIS_PORT              - Redis port (default: 6379).
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import os
 import re
@@ -68,15 +65,7 @@ import flask
 import requests
 from flask_login import current_user
 import jwt
-from redis import Redis
 from sqlalchemy.engine.url import URL as SqlaURL
-
-from athena_rest_connection_mutator import (
-    _get_cognito_tokens_from_redis,
-    _is_token_expired,
-    _refresh_cognito_id_token,
-    _store_cognito_tokens_in_redis,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -89,50 +78,245 @@ IDC_APPLICATION_ARN: str = os.environ.get("IDC_APPLICATION_ARN", "")
 DATAZONE_DOMAIN_ID: str = os.environ.get("DATAZONE_DOMAIN_ID", "")
 DATAZONE_ENVIRONMENT_ID: str = os.environ.get("DATAZONE_ENVIRONMENT_ID", "")
 AWS_REGION: str = os.environ.get("AWS_REGION", "eu-central-1")
-REDIS_HOST: str = os.environ.get("REDIS_HOST", "redis")
-REDIS_PORT: str = os.environ.get("REDIS_PORT", "6379")
 
 # Regex to match the Athena dialect in the SQLAlchemy drivername
 _ATHENA_DIALECT = re.compile(r"awsathena", re.IGNORECASE)
 
-# ---------------------------------------------------------------------------
-# Redis client for DataZone credential caching (Task 2.1)
-# Uses db=2, separate from session store (db=0) and TIP cache (db=1).
-# ---------------------------------------------------------------------------
+# Buffer in seconds — treat the token as expired a bit early to avoid races
+_TOKEN_EXPIRY_BUFFER = 60
 
-_dz_redis = Redis(
-    host=os.getenv("REDIS_HOST", "redis"),
-    port=int(os.getenv("REDIS_PORT", "6379")),
-    db=2,
-)
+# Cache key prefix and TTL for Cognito tokens shared between web/worker
+_TOKEN_CACHE_PREFIX = "cognito_tokens:"
+_TOKEN_CACHE_TTL = 3600  # 1 hour
 
 
 # ---------------------------------------------------------------------------
-# Redis caching helpers (Task 5.1 & 5.2)
+# Cognito token helpers (using Flask-Caching via _cache_get / _cache_set)
+# ---------------------------------------------------------------------------
+
+
+def _store_cognito_tokens(user_email: str) -> None:
+    """Copy Cognito tokens from the Flask session to cache for worker access."""
+    id_token = flask.session.get("cognito_id_token")
+    refresh_token = flask.session.get("cognito_refresh_token")
+    username = flask.session.get("cognito_username", "")
+    email = flask.session.get("cognito_email", "")
+    if id_token:
+        _cache_set(
+            f"{_TOKEN_CACHE_PREFIX}{user_email}",
+            {
+                "cognito_id_token": id_token,
+                "cognito_refresh_token": refresh_token or "",
+                "cognito_username": username,
+                "cognito_email": email,
+            },
+            ttl_seconds=_TOKEN_CACHE_TTL,
+        )
+
+
+def _get_cognito_tokens(user_email: str) -> dict[str, str] | None:
+    """Retrieve Cognito tokens from cache (used by the Celery worker)."""
+    return _cache_get(f"{_TOKEN_CACHE_PREFIX}{user_email}")
+
+
+def _is_token_expired(token: str) -> bool:
+    """Check if a JWT is expired (or about to expire within the buffer window)."""
+    try:
+        claims = jwt.decode(
+            token, options={"verify_signature": False}, algorithms=["RS256"]
+        )
+        exp = claims.get("exp")
+        if exp is None:
+            return True
+        return time.time() >= (exp - _TOKEN_EXPIRY_BUFFER)
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not decode token to check expiry — treating as expired")
+        return True
+
+
+def _compute_secret_hash(username: str, client_id: str, client_secret: str) -> str:
+    """Compute the Cognito SECRET_HASH for the given username."""
+    import base64
+    import hmac
+
+    msg = username + client_id
+    return base64.b64encode(
+        hmac.new(
+            client_secret.encode("utf-8"),
+            msg.encode("utf-8"),
+            hashlib.sha256,
+        ).digest()
+    ).decode("utf-8")
+
+
+def _refresh_cognito_id_token(
+    refresh_token: str | None = None,
+    cognito_username: str | None = None,
+    cognito_email: str | None = None,
+    user_email_for_cache: str | None = None,
+) -> str | None:
+    """Use a refresh token to obtain a fresh Cognito ID token.
+
+    When called without arguments, reads tokens from the Flask session
+    (web context). Pass explicit values for the worker context (from cache).
+
+    Updates the Flask session (if available) and cache with the new token.
+    Returns the new ID token or None if refresh is not possible.
+    """
+    # Resolve parameters from Flask session when not explicitly provided
+    if refresh_token is None:
+        try:
+            refresh_token = flask.session.get("cognito_refresh_token")
+        except RuntimeError:
+            pass
+    if not refresh_token:
+        logger.info("No refresh token available — cannot refresh Cognito ID token")
+        return None
+
+    if cognito_username is None:
+        try:
+            cognito_username = flask.session.get("cognito_username", "")
+        except RuntimeError:
+            cognito_username = ""
+    if cognito_email is None:
+        try:
+            cognito_email = flask.session.get("cognito_email", "")
+        except RuntimeError:
+            cognito_email = ""
+
+    client_id = os.environ.get("COGNITO_CLIENT_ID", "")
+    client_secret = os.environ.get("COGNITO_CLIENT_SECRET", "")
+    if not client_id:
+        logger.warning("COGNITO_CLIENT_ID not set — cannot refresh token")
+        return None
+
+    candidates: list[str] = []
+    if cognito_username:
+        candidates.append(cognito_username)
+    if cognito_email and cognito_email != cognito_username:
+        candidates.append(cognito_email)
+
+    if not candidates:
+        logger.warning(
+            "Neither cognito_username nor cognito_email available — "
+            "cannot compute SECRET_HASH"
+        )
+        return None
+
+    cognito_idp = boto3.client("cognito-idp", region_name=AWS_REGION)
+
+    for username_candidate in candidates:
+        try:
+            auth_params: dict[str, str] = {
+                "REFRESH_TOKEN": refresh_token,
+            }
+            if client_secret:
+                auth_params["SECRET_HASH"] = _compute_secret_hash(
+                    username_candidate, client_id, client_secret
+                )
+            logger.debug(
+                "Attempting token refresh with username=%s", username_candidate
+            )
+
+            response = cognito_idp.initiate_auth(
+                ClientId=client_id,
+                AuthFlow="REFRESH_TOKEN_AUTH",
+                AuthParameters=auth_params,
+            )
+            result = response.get("AuthenticationResult", {})
+            new_id_token = result.get("IdToken")
+            if new_id_token:
+                # Update Flask session if available
+                try:
+                    flask.session["cognito_id_token"] = new_id_token
+                except RuntimeError:
+                    pass
+                # Update cache so the worker picks up the fresh token
+                email_key = user_email_for_cache or cognito_email
+                if email_key:
+                    _cache_set(
+                        f"{_TOKEN_CACHE_PREFIX}{email_key}",
+                        {
+                            "cognito_id_token": new_id_token,
+                            "cognito_refresh_token": refresh_token,
+                            "cognito_username": cognito_username or "",
+                            "cognito_email": cognito_email or "",
+                        },
+                        ttl_seconds=_TOKEN_CACHE_TTL,
+                    )
+                logger.info(
+                    "Refreshed Cognito ID token via REFRESH_TOKEN_AUTH "
+                    "(username=%s)",
+                    username_candidate,
+                )
+                return new_id_token
+        except ClientError as exc:
+            error_code = exc.response.get("Error", {}).get("Code", "")
+            if error_code == "NotAuthorizedException" and len(candidates) > 1:
+                logger.info(
+                    "SECRET_HASH rejected for username=%s, trying next candidate",
+                    username_candidate,
+                )
+                continue
+            logger.exception("Failed to refresh Cognito ID token")
+            return None
+        except BotoCoreError:
+            logger.exception("Failed to refresh Cognito ID token")
+            return None
+
+    logger.error("All username candidates failed for SECRET_HASH computation")
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Flask-Caching helpers for DataZone credential caching
+#
+# Uses Superset's cache_manager.cache (configured via CACHE_CONFIG) which
+# supports any Flask-Caching backend (Redis, Memcached, filesystem, etc.).
+# Serialization is handled by Flask-Caching (pickle) so datetime objects
+# and other Python types are stored without manual JSON conversion.
+# ---------------------------------------------------------------------------
+
+
+def _get_flask_cache():
+    """Lazily import and return the Flask-Caching cache instance.
+
+    Returns the cache_manager.cache instance when a Flask app context is
+    available, or None if the import fails or no app context exists.
+    """
+    try:
+        from superset.extensions import cache_manager
+        return cache_manager.cache
+    except Exception:  # noqa: BLE001
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Caching helpers (using Flask-Caching via Superset's cache_manager)
 # ---------------------------------------------------------------------------
 
 
 def _cache_get(cache_key: str) -> dict[str, Any] | None:
-    """Retrieve a cached value from Redis, returning None on miss or error.
+    """Retrieve a cached value, returning None on miss or error.
 
-    Implements graceful degradation: if Redis is unavailable or the stored
-    value cannot be deserialized, logs a warning and returns None so the
-    caller proceeds without caching.
+    Implements graceful degradation: if the cache backend is unavailable
+    or the stored value cannot be retrieved, logs a warning and returns
+    None so the caller proceeds without caching.
 
     Args:
-        cache_key: Full Redis key (e.g. "dz_mutator:intermediary:user@ex.com:abc123").
+        cache_key: Cache key (e.g. "dz_mutator:intermediary:user@ex.com:abc123").
 
     Returns:
-        Deserialized dict on cache hit, or None on miss/error.
+        Cached dict on hit, or None on miss/error.
     """
     try:
-        raw = _dz_redis.get(cache_key)
-        if raw is None:
+        cache = _get_flask_cache()
+        if cache is None:
             return None
-        return json.loads(raw)
+        return cache.get(cache_key)
     except Exception:  # noqa: BLE001
         logger.warning(
-            "datazone_mutator: Redis cache GET failed for key=%s — "
+            "datazone_mutator: cache GET failed for key=%s — "
             "proceeding without cache",
             cache_key,
         )
@@ -140,31 +324,73 @@ def _cache_get(cache_key: str) -> dict[str, Any] | None:
 
 
 def _cache_set(cache_key: str, value: dict[str, Any], ttl_seconds: int) -> None:
-    """Store a value in Redis with the given TTL (seconds).
+    """Store a value in the cache with the given TTL (seconds).
 
-    Implements graceful degradation: if Redis is unavailable or
-    serialization fails, logs a warning and returns without raising.
+    Implements graceful degradation: if the cache backend is unavailable,
+    logs a warning and returns without raising.
 
     Args:
-        cache_key: Full Redis key.
-        value: Dict to JSON-serialize and store.
+        cache_key: Cache key.
+        value: Dict to store.
         ttl_seconds: Time-to-live in seconds. If <= 0, the value is not cached.
     """
     if ttl_seconds <= 0:
         return
     try:
-        serialized = json.dumps(value)
-        _dz_redis.setex(cache_key, ttl_seconds, serialized)
+        cache = _get_flask_cache()
+        if cache is None:
+            logger.warning(
+                "datazone_mutator: cache unavailable for SET key=%s — "
+                "proceeding without cache",
+                cache_key,
+            )
+            return
+        cache.set(cache_key, value, timeout=ttl_seconds)
     except Exception:  # noqa: BLE001
         logger.warning(
-            "datazone_mutator: Redis cache SET failed for key=%s — "
+            "datazone_mutator: cache SET failed for key=%s — "
             "proceeding without cache",
             cache_key,
         )
 
 
+def _invalidate_cache_entry(cache_key: str) -> None:
+    """Delete a cache entry, logging the invalidation.
+
+    Implements graceful degradation: if the cache backend is unavailable,
+    logs a warning and returns without raising.
+
+    Args:
+        cache_key: The cache key to delete.
+
+    Returns:
+        None
+    """
+    try:
+        cache = _get_flask_cache()
+        if cache is None:
+            logger.warning(
+                "datazone_mutator: cache unavailable for DELETE key=%s — "
+                "proceeding without invalidation",
+                cache_key,
+            )
+            return None
+        cache.delete(cache_key)
+        logger.info(
+            "datazone_mutator: invalidated cache entry key=%s",
+            cache_key,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "datazone_mutator: cache DELETE failed for key=%s — "
+            "proceeding without invalidation",
+            cache_key,
+        )
+    return None
+
+
 def _build_cache_key(step: str, user_email: str, *identifiers: str) -> str:
-    """Build a namespaced Redis cache key for the DataZone credential chain.
+    """Build a namespaced cache key for the DataZone credential chain.
 
     Key format: ``dz_mutator:{step}:{user_email}:{identifier_hash}``
 
@@ -187,23 +413,26 @@ def _build_cache_key(step: str, user_email: str, *identifiers: str) -> str:
     return f"dz_mutator:{step}:{user_email}:{identifier_hash}"
 
 
-def _compute_expiration_ttl(expiration: Any) -> int:
-    """Compute a cache TTL from an expiration value with a 60-second buffer.
+def _compute_expiration_ttl(expiration: Any, buffer: int | None = None) -> int:
+    """Compute a cache TTL from an expiration value with a configurable buffer.
 
     Handles expiration values as:
       - Unix timestamp (int or float)
       - ISO 8601 datetime string (e.g. "2024-01-15T12:00:00Z")
       - datetime object
 
-    Returns the number of seconds until expiration minus 60s buffer.
+    Returns the number of seconds until expiration minus the buffer.
     Returns 0 if the expiration cannot be parsed or the TTL would be <= 0.
 
     Args:
         expiration: Expiration value (timestamp, ISO string, or datetime).
+        buffer: Safety buffer in seconds. Defaults to _get_ttl_buffer() if None.
 
     Returns:
         TTL in seconds (>= 0). Returns 0 if caching should be skipped.
     """
+    if buffer is None:
+        buffer = _get_ttl_buffer()
     try:
         if isinstance(expiration, (int, float)):
             expiration_epoch = float(expiration)
@@ -219,10 +448,77 @@ def _compute_expiration_ttl(expiration: Any) -> int:
         else:
             return 0
 
-        ttl = int(expiration_epoch - time.time() - 60)
+        ttl = int(expiration_epoch - time.time() - buffer)
         return max(ttl, 0)
     except (ValueError, TypeError, OSError):
         return 0
+
+
+def _get_ttl_buffer() -> int:
+    """Read the TTL buffer from CREDENTIAL_CACHE_TTL_BUFFER env var.
+
+    Returns:
+        Buffer in seconds. Defaults to 60 if env var is unset or invalid.
+    """
+    raw = os.environ.get("CREDENTIAL_CACHE_TTL_BUFFER")
+    if not raw:
+        return 60
+    try:
+        return int(raw)
+    except (ValueError, TypeError):
+        logger.warning(
+            "datazone_mutator: CREDENTIAL_CACHE_TTL_BUFFER=%r is not a valid "
+            "integer - defaulting to 60 seconds",
+            raw,
+        )
+        return 60
+
+
+def _is_credential_expired(cached_entry: dict[str, Any], ttl_buffer: int) -> bool:
+    """Check if a cached credential entry has expired or is about to expire.
+
+    Args:
+        cached_entry: Dict containing an 'expiration' field (Unix timestamp,
+            ISO 8601 string, or datetime object).
+        ttl_buffer: Safety buffer in seconds to subtract from expiration.
+
+    Returns:
+        True if credentials are expired or will expire within the buffer window.
+    """
+    expiration = cached_entry.get("expiration")
+    if expiration is None:
+        logger.debug(
+            "datazone_mutator: cached entry has no 'expiration' field - "
+            "treating as expired"
+        )
+        return True
+
+    try:
+        if isinstance(expiration, (int, float)):
+            expiration_epoch = float(expiration)
+        elif isinstance(expiration, str):
+            exp_str = expiration.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(exp_str)
+            expiration_epoch = dt.timestamp()
+        elif hasattr(expiration, "timestamp"):
+            # datetime object
+            expiration_epoch = expiration.timestamp()
+        else:
+            logger.debug(
+                "datazone_mutator: unparseable expiration type=%s - "
+                "treating as expired",
+                type(expiration).__name__,
+            )
+            return True
+    except (ValueError, TypeError, OSError):
+        logger.debug(
+            "datazone_mutator: failed to parse expiration value - "
+            "treating as expired"
+        )
+        return True
+
+    remaining = expiration_epoch - time.time() - ttl_buffer
+    return remaining <= 0
 
 
 # ---------------------------------------------------------------------------
@@ -337,11 +633,11 @@ def _get_current_user_email() -> str | None:
 
 def _get_cognito_id_token(user_email: str) -> str | None:
     """
-    Read the Cognito ID token from the Flask session or Redis.
+    Read the Cognito ID token from the Flask session or cache.
 
     In the web request context, reads from the Flask session.
-    In the Celery worker context (no session), falls back to Redis
-    via the shared ``_get_cognito_tokens_from_redis`` helper.
+    In the Celery worker context (no session), falls back to the cache
+    via ``_get_cognito_tokens``.
 
     If the token is expired (checked with a 60-second buffer via
     ``_is_token_expired``), attempts a refresh using the stored
@@ -364,40 +660,40 @@ def _get_cognito_id_token(user_email: str) -> str | None:
                 "— attempting refresh for %s",
                 user_email,
             )
-            token = _refresh_cognito_id_token(user_email_for_redis=user_email)
+            token = _refresh_cognito_id_token(user_email_for_cache=user_email)
         if token:
-            # Sync tokens to Redis so Celery workers can use them
+            # Sync tokens to cache so Celery workers can use them
             try:
-                _store_cognito_tokens_in_redis(user_email)
+                _store_cognito_tokens(user_email)
             except Exception:  # noqa: BLE001
                 logger.debug(
-                    "datazone_mutator: could not sync tokens to Redis for %s",
+                    "datazone_mutator: could not sync tokens to cache for %s",
                     user_email,
                 )
             return token
 
-    # Fall back to Redis (worker context)
-    redis_data = _get_cognito_tokens_from_redis(user_email)
-    if redis_data:
-        token = redis_data.get("cognito_id_token")
+    # Fall back to cache (worker context)
+    cached_data = _get_cognito_tokens(user_email)
+    if cached_data:
+        token = cached_data.get("cognito_id_token")
         if token and not _is_token_expired(token):
             logger.info(
                 "datazone_mutator: retrieved valid Cognito ID token from "
-                "Redis for %s",
+                "cache for %s",
                 user_email,
             )
             return token
-        # Token expired — try refreshing using the refresh token from Redis
+        # Token expired — try refreshing using the refresh token from cache
         logger.info(
-            "datazone_mutator: Cognito token from Redis is expired for %s "
+            "datazone_mutator: Cognito token from cache is expired for %s "
             "— attempting refresh",
             user_email,
         )
         token = _refresh_cognito_id_token(
-            refresh_token=redis_data.get("cognito_refresh_token"),
-            cognito_username=redis_data.get("cognito_username"),
-            cognito_email=redis_data.get("cognito_email"),
-            user_email_for_redis=user_email,
+            refresh_token=cached_data.get("cognito_refresh_token"),
+            cognito_username=cached_data.get("cognito_username"),
+            cognito_email=cached_data.get("cognito_email"),
+            user_email_for_cache=user_email,
         )
         if token:
             return token
@@ -419,7 +715,7 @@ def _assume_role_with_web_identity(
     assuming the OIDC-trusted role. These intermediary credentials are
     used in Step 2 to call SSO-OIDC CreateTokenWithIAM.
 
-    Results are cached in Redis with TTL=850s (900s role duration minus
+    Results are cached with TTL=850s (900s role duration minus
     50s buffer).
 
     Args:
@@ -514,7 +810,7 @@ def _create_token_with_iam(
     CreateTokenWithIAM, exchanging the Cognito ID token for an Identity
     Center access token.
 
-    Results are cached in Redis with TTL = expiresIn - 60s.
+    Results are cached with TTL = expiresIn - 60s.
 
     Args:
         cognito_id_token: Valid Cognito ID token JWT (used as assertion).
@@ -648,7 +944,7 @@ def _redeem_access_token(
     Sends an HTTP POST to the DataZone SSO redeem-token endpoint to
     exchange the IDC access token for DomainExecutionRole credentials.
 
-    Results are cached in Redis with TTL based on the expiration field
+    Results are cached with TTL based on the expiration field
     minus a 60-second buffer.
 
     Args:
@@ -774,7 +1070,7 @@ def _get_environment_credentials(
     DataZone GetEnvironmentCredentials API, obtaining the final
     environment-scoped credentials for Athena/Glue access.
 
-    Results are cached in Redis with TTL based on the expiration field
+    Results are cached with TTL based on the expiration field
     minus a 60-second buffer.
 
     Args:
@@ -866,10 +1162,16 @@ def _get_environment_credentials(
     # Extract credentials from the response
     # GetEnvironmentCredentials returns accessKeyId, secretAccessKey,
     # sessionToken, and expiration at the top level of the response dict.
+    # Note: boto3 returns expiration as a datetime object — convert to
+    # ISO 8601 string for cache serialization compatibility.
     access_key_id = response.get("accessKeyId", "")
     secret_access_key = response.get("secretAccessKey", "")
     session_token = response.get("sessionToken", "")
-    expiration = response.get("expiration", "")
+    raw_expiration = response.get("expiration", "")
+    if hasattr(raw_expiration, "isoformat"):
+        expiration = raw_expiration.isoformat()
+    else:
+        expiration = raw_expiration
 
     logger.info(
         "Step 4 (GetEnvironmentCredentials) succeeded — "
@@ -888,6 +1190,14 @@ def _get_environment_credentials(
     # Cache with TTL based on expiration - 60s buffer
     ttl = _compute_expiration_ttl(result["expiration"])
     _cache_set(cache_key, result, ttl_seconds=ttl)
+
+    if ttl > 0:
+        logger.info(
+            "datazone_mutator: stored environment credentials in cache "
+            "key=%s ttl=%ds",
+            cache_key,
+            ttl,
+        )
 
     return result
 
@@ -1057,76 +1367,157 @@ def datazone_connection_mutator(
     # Catches all exceptions from the credential chain and returns the
     # original URI unchanged so Superset never receives an unhandled error.
     try:
+        # Top-level cache check - before Cognito token resolution
+        final_cache_key = _build_cache_key(
+            "env_creds", user_email, dz_params.domain_id, dz_params.environment_id
+        )
+        cached_final = _cache_get(final_cache_key)
+        if cached_final is not None:
+            if not _is_credential_expired(cached_final, _get_ttl_buffer()):
+                # Cache hit with valid credentials - skip entire chain
+                remaining_ttl = _compute_expiration_ttl(
+                    cached_final.get("expiration"), _get_ttl_buffer()
+                )
+                logger.info(
+                    "datazone_mutator: top-level cache HIT for user=%s "
+                    "domain=%s env=%s remaining_ttl=%ds — skipping chain",
+                    user_email,
+                    dz_params.domain_id,
+                    dz_params.environment_id,
+                    remaining_ttl,
+                )
+                new_url = _build_datazone_url(uri, cached_final, dz_params)
+                logger.info(
+                    "datazone_mutator: rewrote URI for user=%s — %s",
+                    user_email,
+                    _scrub_credentials(str(new_url)),
+                )
+                return new_url, connect_args
+            else:
+                logger.info(
+                    "datazone_mutator: top-level cache EXPIRED for user=%s "
+                    "domain=%s env=%s — executing full chain",
+                    user_email,
+                    dz_params.domain_id,
+                    dz_params.environment_id,
+                )
+        else:
+            logger.info(
+                "datazone_mutator: top-level cache MISS for user=%s "
+                "domain=%s env=%s — executing full chain",
+                user_email,
+                dz_params.domain_id,
+                dz_params.environment_id,
+            )
+
         # Step 0: Get Cognito ID token
         cognito_id_token = _get_cognito_id_token(user_email)
         if not cognito_id_token:
             logger.warning(
                 "datazone_mutator: no Cognito token for user=%s "
-                "— cannot proceed with DataZone flow, returning URI unchanged",
+                "- cannot proceed with DataZone flow, returning URI unchanged",
                 user_email,
             )
             return uri, connect_args
 
         # Validate required environment variables
         if not OIDC_ROLE_ARN:
-            logger.error(
+            logger.info(
                 "datazone_mutator: OIDC_ROLE_ARN environment variable is not set "
-                "— cannot execute token chain"
+                "- using environment role"
             )
-            return uri, connect_args
 
         if not IDC_APPLICATION_ARN:
             logger.error(
                 "datazone_mutator: IDC_APPLICATION_ARN environment variable is not set "
-                "— cannot execute token chain"
+                "- cannot execute token chain"
             )
             return uri, connect_args
 
-        # Check final environment credentials cache before executing chain
-        final_cache_key = _build_cache_key(
-            "env_creds", user_email, dz_params.domain_id, dz_params.environment_id
-        )
-        cached_final = _cache_get(final_cache_key)
-        if cached_final is not None:
-            logger.info(
-                "datazone_mutator: using cached environment credentials "
-                "for user=%s domain=%s env=%s",
+        # Execute the token exchange chain (Steps 1-4) with retry-once
+        # on authentication failure.
+        try:
+            # Step 1: AssumeRoleWithWebIdentity → intermediary IAM credentials
+            intermediary_creds = _assume_role_with_web_identity(
+                cognito_id_token, OIDC_ROLE_ARN, user_email
+            )
+
+            # Step 2: CreateTokenWithIAM → IDC access token
+            idc_token_data = _create_token_with_iam(
+                cognito_id_token, intermediary_creds, IDC_APPLICATION_ARN, user_email
+            )
+            idc_access_token = idc_token_data["access_token"]
+
+            # Step 3: RedeemAccessToken → DomainExecutionRole credentials
+            domain_creds = _redeem_access_token(
+                idc_access_token,
+                dz_params.domain_id,
+                dz_params.domain_region,
                 user_email,
+            )
+
+            # Step 4: GetEnvironmentCredentials → final environment credentials
+            env_creds = _get_environment_credentials(
+                domain_creds,
                 dz_params.domain_id,
                 dz_params.environment_id,
-            )
-            new_url = _build_datazone_url(uri, cached_final, dz_params)
-            logger.info(
-                "datazone_mutator: rewrote URI for user=%s — %s",
+                dz_params.domain_region,
                 user_email,
-                _scrub_credentials(str(new_url)),
             )
-            return new_url, connect_args
+        except RuntimeError as chain_exc:
+            # Check if this is an auth failure that warrants cache
+            # invalidation and retry
+            error_msg = str(chain_exc)
+            is_auth_failure = any(
+                err_type in error_msg
+                for err_type in (
+                    "ExpiredTokenException",
+                    "InvalidCredentialsException",
+                )
+            )
+            if not is_auth_failure:
+                raise
 
-        # Step 1: AssumeRoleWithWebIdentity → intermediary IAM credentials
-        intermediary_creds = _assume_role_with_web_identity(
-            cognito_id_token, OIDC_ROLE_ARN, user_email
-        )
+            logger.warning(
+                "datazone_mutator: auth failure detected — invalidating "
+                "cache key=%s error=%s — retrying chain once",
+                final_cache_key,
+                type(chain_exc).__name__,
+            )
+            _invalidate_cache_entry(final_cache_key)
 
-        # Step 2: CreateTokenWithIAM → IDC access token
-        idc_token_data = _create_token_with_iam(
-            cognito_id_token, intermediary_creds, IDC_APPLICATION_ARN, user_email
-        )
-        idc_access_token = idc_token_data["access_token"]
-
-        # Step 3: RedeemAccessToken → DomainExecutionRole credentials
-        domain_creds = _redeem_access_token(
-            idc_access_token, dz_params.domain_id, dz_params.domain_region, user_email
-        )
-
-        # Step 4: GetEnvironmentCredentials → final environment credentials
-        env_creds = _get_environment_credentials(
-            domain_creds,
-            dz_params.domain_id,
-            dz_params.environment_id,
-            dz_params.domain_region,
-            user_email,
-        )
+            # Retry the full chain once
+            try:
+                intermediary_creds = _assume_role_with_web_identity(
+                    cognito_id_token, OIDC_ROLE_ARN, user_email
+                )
+                idc_token_data = _create_token_with_iam(
+                    cognito_id_token,
+                    intermediary_creds,
+                    IDC_APPLICATION_ARN,
+                    user_email,
+                )
+                idc_access_token = idc_token_data["access_token"]
+                domain_creds = _redeem_access_token(
+                    idc_access_token,
+                    dz_params.domain_id,
+                    dz_params.domain_region,
+                    user_email,
+                )
+                env_creds = _get_environment_credentials(
+                    domain_creds,
+                    dz_params.domain_id,
+                    dz_params.environment_id,
+                    dz_params.domain_region,
+                    user_email,
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "datazone_mutator: retry also failed for user=%s "
+                    "— returning original URI unchanged",
+                    user_email,
+                )
+                return uri, connect_args
 
         # Build the new URL with the environment credentials
         new_url = _build_datazone_url(uri, env_creds, dz_params)

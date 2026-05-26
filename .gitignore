@@ -142,3 +142,4 @@ oxc-custom-build/
 
 # TIP flow test cache (contains temporary AWS credentials)
 .tip_cache.json
+**/.hypothesis/*

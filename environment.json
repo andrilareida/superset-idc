@@ -1,0 +1,407 @@
+{
+    "projectId": "568od5rs4kpsaz",
+    "id": "543huadved7z0r",
+    "domainId": "dzd-djkh2xy1il745n",
+    "createdBy": "SYSTEM",
+    "createdAt": "2026-03-18T09:20:35.271484+00:00",
+    "updatedAt": "2026-03-18T09:21:34.700294+00:00",
+    "name": "Tooling",
+    "description": "Configuration for the Tooling",
+    "awsAccountId": "666839000341",
+    "awsAccountRegion": "eu-central-1",
+    "provider": "Amazon SageMaker",
+    "provisionedResources": [
+        {
+            "provider": "Amazon DataZone Generated",
+            "name": "isDefaultToolingEnvironment",
+            "value": "true",
+            "type": ""
+        },
+        {
+            "provider": "Amazon DataZone Generated",
+            "name": "systemRole-AmazonBedrockLambdaExecutionRoleArn",
+            "value": "arn:aws:iam::666839000341:role/AmazonBedrockLambdaExecutionRole-568od5rs4kpsaz-543huadved7z0r",
+            "type": ""
+        },
+        {
+            "provider": "Amazon DataZone Generated",
+            "name": "s3BucketArn",
+            "value": "arn:aws:s3:::foen-dev-unified-studio-projects/dzd-djkh2xy1il745n/568od5rs4kpsaz/dev/",
+            "type": ""
+        },
+        {
+            "provider": "Amazon DataZone Generated",
+            "name": "enableNetworkIsolation",
+            "value": "true",
+            "type": ""
+        },
+        {
+            "provider": "Amazon DataZone Generated",
+            "name": "privateSubnets",
+            "value": "subnet-0515e97193e0e6ca2,subnet-0cd5d3c378d4cb792,subnet-0aa1eefdeb5465be0",
+            "type": ""
+        },
+        {
+            "provider": "Amazon DataZone Generated",
+            "name": "ScheduleGroupName",
+            "value": "SageMakerUnifiedStudio-568od5rs4kpsaz-dev",
+            "type": ""
+        },
+        {
+            "provider": "Amazon DataZone Generated",
+            "name": "vpcId",
+            "value": "vpc-05f6c493131238fc6",
+            "type": ""
+        },
+        {
+            "provider": "Amazon DataZone Generated",
+            "name": "enableS3AccessGrantsForTools",
+            "value": "true",
+            "type": ""
+        },
+        {
+            "provider": "Amazon DataZone Generated",
+            "name": "allowConnectionToUserGovernedEmrClusters",
+            "value": "false",
+            "type": ""
+        },
+        {
+            "provider": "Amazon DataZone Generated",
+            "name": "athenaWorkGroupName",
+            "value": "workgroup-568od5rs4kpsaz-543huadved7z0r",
+            "type": ""
+        },
+        {
+            "provider": "Amazon DataZone Generated",
+            "name": "sageMakerDomainId",
+            "value": "d-l3r4qum11g6i",
+            "type": ""
+        },
+        {
+            "provider": "Amazon DataZone Generated",
+            "name": "glueNetworkConnection",
+            "value": "datazone-glue-network-connection-568od5rs4kpsaz-dev",
+            "type": ""
+        },
+        {
+            "provider": "Amazon DataZone Generated",
+            "name": "userRoleName",
+            "value": "datazone_usr_role_568od5rs4kpsaz_543huadved7z0r",
+            "type": ""
+        },
+        {
+            "provider": "Amazon DataZone Generated",
+            "name": "athenaOutputUri",
+            "value": "s3://foen-dev-unified-studio-projects/dzd-djkh2xy1il745n/568od5rs4kpsaz/dev/sys/athena/",
+            "type": ""
+        },
+        {
+            "provider": "Amazon DataZone Generated",
+            "name": "cloudFormationStackId",
+            "value": "arn:aws:cloudformation:eu-central-1:666839000341:stack/DataZone-Env-543huadved7z0r/b9c56730-22ab-11f1-9cc6-0af2ffa3b8f1",
+            "type": ""
+        },
+        {
+            "provider": "Amazon DataZone Generated",
+            "name": "logGroupArn",
+            "value": "arn:aws:logs:eu-central-1:666839000341:log-group:datazone-568od5rs4kpsaz-dev:*",
+            "type": ""
+        },
+        {
+            "provider": "Amazon DataZone Generated",
+            "name": "enableUserBackgroundSessions",
+            "value": "false",
+            "type": ""
+        },
+        {
+            "provider": "Amazon DataZone Generated",
+            "name": "securityGroup",
+            "value": "sg-03b1db2aa269bf7f3",
+            "type": ""
+        },
+        {
+            "provider": "Amazon DataZone Generated",
+            "name": "s3BucketPath",
+            "value": "s3://foen-dev-unified-studio-projects/dzd-djkh2xy1il745n/568od5rs4kpsaz/dev",
+            "type": ""
+        },
+        {
+            "provider": "Amazon DataZone Generated",
+            "name": "logGroupRetention",
+            "value": "731",
+            "type": ""
+        },
+        {
+            "provider": "Amazon DataZone Generated",
+            "name": "userRoleArn",
+            "value": "arn:aws:iam::666839000341:role/datazone_usr_role_568od5rs4kpsaz_543huadved7z0r",
+            "type": ""
+        },
+        {
+            "provider": "Amazon DataZone Generated",
+            "name": "logGroupName",
+            "value": "datazone-568od5rs4kpsaz-dev",
+            "type": ""
+        },
+        {
+            "provider": "Amazon DataZone Generated",
+            "name": "systemRole-AmazonBedrockServiceRoleArn",
+            "value": "arn:aws:iam::666839000341:role/AmazonBedrockServiceRole-568od5rs4kpsaz-543huadved7z0r",
+            "type": ""
+        },
+        {
+            "provider": "Amazon DataZone Generated",
+            "name": "enableWorkflowsConfigV2",
+            "value": "false",
+            "type": ""
+        },
+        {
+            "provider": "Amazon DataZone Generated",
+            "name": "SageMakerSpacesDomain",
+            "value": "d-l3r4qum11g6i",
+            "type": ""
+        },
+        {
+            "provider": "Amazon DataZone Generated",
+            "name": "nonGitProjectRepositoryLocation",
+            "value": "s3://foen-dev-unified-studio-projects/dzd-djkh2xy1il745n/568od5rs4kpsaz/shared",
+            "type": ""
+        },
+        {
+            "provider": "Amazon DataZone Generated",
+            "name": "enableTrustedIdentityPropagationPermissions",
+            "value": "false",
+            "type": ""
+        }
+    ],
+    "status": "ACTIVE",
+    "environmentActions": [],
+    "userParameters": [
+        {
+            "keyName": "gitFullRepositoryId",
+            "description": "The full repository ID for the provided AWS CodeConnections connection. When provided, project will not create a default repository.",
+            "fieldType": "String",
+            "defaultValue": "",
+            "isEditable": true,
+            "isOptional": true
+        },
+        {
+            "keyName": "enableAmazonBedrockPermissions",
+            "description": "Enable Amazon Bedrock generative AI permissions in projects. Defaults to true.",
+            "fieldType": "String",
+            "defaultValue": "true",
+            "isEditable": false,
+            "isOptional": true
+        },
+        {
+            "keyName": "enableSageMakerMLWorkloadsPermissions",
+            "description": "Enable SageMaker ML Workloads permissions for Tooling user role.",
+            "fieldType": "String",
+            "defaultValue": "true",
+            "isEditable": false,
+            "isOptional": true
+        },
+        {
+            "keyName": "minIdleTimeoutInMinutes",
+            "description": "The minimum time (in minutes) that SageMaker waits after the application becomes idle before shutting this environment's SageMaker domain down.",
+            "fieldType": "String",
+            "defaultValue": "60",
+            "isEditable": false,
+            "isOptional": true
+        },
+        {
+            "keyName": "enableGlueWorkloadsPermissions",
+            "description": "Enable Glue Workloads permissions for Tooling user role.",
+            "fieldType": "String",
+            "defaultValue": "true",
+            "isEditable": false,
+            "isOptional": true
+        },
+        {
+            "keyName": "maxEbsVolumeSize",
+            "description": "The maximum EBS storage volume size (in GB) for this environment's SageMaker domain.",
+            "fieldType": "String",
+            "defaultValue": "100",
+            "isEditable": false,
+            "isOptional": true
+        },
+        {
+            "keyName": "idleTimeoutInMinutes",
+            "description": "The time (in minutes) that SageMaker waits after the application becomes idle before shutting this environment's SageMaker domain down.",
+            "fieldType": "String",
+            "defaultValue": "60",
+            "isEditable": false,
+            "isOptional": true
+        },
+        {
+            "keyName": "enableNetworkIsolation",
+            "description": "Enable network isolation for training and deployed inference container",
+            "fieldType": "String",
+            "defaultValue": "true",
+            "isEditable": false,
+            "isOptional": true
+        },
+        {
+            "keyName": "lifecycleManagement",
+            "description": "Indicates whether idle shutdown is activated for this environment's SageMaker domain.",
+            "fieldType": "String",
+            "defaultValue": "ENABLED",
+            "isEditable": false,
+            "isOptional": true
+        },
+        {
+            "keyName": "sagemakerDomainNetworkType",
+            "description": "The network type for this environment's SageMaker domain.",
+            "fieldType": "String",
+            "defaultValue": "VpcOnly",
+            "isEditable": false,
+            "isOptional": true
+        },
+        {
+            "keyName": "gitBranchName",
+            "description": "The Git branch name for the provided repository.",
+            "fieldType": "String",
+            "defaultValue": "",
+            "isEditable": true,
+            "isOptional": true
+        },
+        {
+            "keyName": "maxIdleTimeoutInMinutes",
+            "description": "The maximum time (in minutes) that SageMaker waits after the application becomes idle before shutting this environment's SageMaker domain down.",
+            "fieldType": "String",
+            "defaultValue": "525600",
+            "isEditable": false,
+            "isOptional": true
+        },
+        {
+            "keyName": "enableS3AccessGrantsForTools",
+            "description": "Enable the use of S3 Access Grants for S3 asset subscriptions. If disabled, access to S3 asset using subscription will not be handled (or managed) by the system.",
+            "fieldType": "String",
+            "defaultValue": "true",
+            "isEditable": true,
+            "isOptional": true
+        },
+        {
+            "keyName": "gitConnectionArn",
+            "description": "The AWS CodeConnections connection ARN for this environment. When provided, project will use this connection to create or use a repository.",
+            "fieldType": "String",
+            "defaultValue": "",
+            "isEditable": false,
+            "isOptional": true
+        },
+        {
+            "keyName": "allowConnectionToUserGovernedEmrClusters",
+            "description": "Allow connection creation to existing user governed EMR Clusters",
+            "fieldType": "String",
+            "defaultValue": "false",
+            "isEditable": false,
+            "isOptional": true
+        },
+        {
+            "keyName": "ec2InstanceTypes",
+            "description": "Comma delimited list of EC2 instance types available for SageMaker spaces, e.g. ml.t3.medium, ml.t3.xlarge.",
+            "fieldType": "String",
+            "defaultValue": "ml.t3.medium",
+            "isEditable": false,
+            "isOptional": true
+        },
+        {
+            "keyName": "workgroupName",
+            "description": "Name of the Athena workgroup",
+            "fieldType": "String",
+            "defaultValue": "",
+            "isEditable": true,
+            "isOptional": true
+        },
+        {
+            "keyName": "enableAmazonBedrockIDEPermissions",
+            "description": "Deprecated. This parameter takes precedence over enableAmazonBedrockPermissions. Defaults to unset.",
+            "fieldType": "String",
+            "defaultValue": "",
+            "isEditable": false,
+            "isOptional": true
+        },
+        {
+            "keyName": "enableUserBackgroundSessions",
+            "description": "Enables user background sessions.",
+            "fieldType": "String",
+            "defaultValue": "false",
+            "isEditable": false,
+            "isOptional": true
+        },
+        {
+            "keyName": "isNewGitRepository",
+            "description": "Indicates whether a new Git repository is requested.",
+            "fieldType": "String",
+            "defaultValue": "",
+            "isEditable": true,
+            "isOptional": true
+        },
+        {
+            "keyName": "logGroupRetention",
+            "description": "The retention (in days) for the CloudWatch log groups in this project. Leave empty to keep logs indefinitely.",
+            "fieldType": "String",
+            "defaultValue": "731",
+            "isEditable": true,
+            "isOptional": true
+        },
+        {
+            "keyName": "s3BucketPrefix",
+            "description": "You can use this parameter to specify the Amazon S3 bucket to be created, per project, for shared project files. If you leave this field blank, the default Amazon S3 bucket for the domain is used. Example: If “DataBucket” is specified, the bucket created is called “DataBucket-abcd1234\" where \"abcd1234\" is the project ID.",
+            "fieldType": "String",
+            "defaultValue": "",
+            "isEditable": false,
+            "isOptional": true
+        },
+        {
+            "keyName": "enableAthena",
+            "description": "Enable creation of Athena resources",
+            "fieldType": "String",
+            "defaultValue": "true",
+            "isEditable": true,
+            "isOptional": true
+        },
+        {
+            "keyName": "enableTrustedIdentityPropagationPermissions",
+            "description": "Enables AWS services to grant permissions based on user attributes such as group associations, add context to an IAM role identifying the user requesting access to AWS resources, and propagate this context to other AWS services.",
+            "fieldType": "String",
+            "defaultValue": "false",
+            "isEditable": false,
+            "isOptional": true
+        },
+        {
+            "keyName": "enableProjectRepositoryAutoSync",
+            "description": "Controls automatic synchronization of project repository contents to the project's S3 bucket.",
+            "fieldType": "String",
+            "defaultValue": "false",
+            "isEditable": true,
+            "isOptional": true
+        },
+        {
+            "keyName": "enableSpaces",
+            "description": "Enable creation of private compute spaces for development tools",
+            "fieldType": "String",
+            "defaultValue": "true",
+            "isEditable": false,
+            "isOptional": true
+        }
+    ],
+    "lastDeployment": {
+        "deploymentId": "algwfo841a48wb",
+        "deploymentType": "CREATE",
+        "deploymentStatus": "SUCCESSFUL",
+        "messages": [],
+        "isDeploymentComplete": true
+    },
+    "provisioningProperties": {
+        "cloudFormation": {
+            "templateUrl": "https://env-blueprint-access-ebzbiihch1o9doucs9mzerzwxz6akeuc1b-s3alias.s3-accesspoint.eu-central-1.amazonaws.com/v1/DataZone-Amazon-SageMaker-ToolingDefault-prod-20260225.template.json"
+        }
+    },
+    "deploymentProperties": {
+        "startTimeoutMinutes": 5,
+        "endTimeoutMinutes": 180
+    },
+    "environmentBlueprintId": "asjqyblxsdx6mj",
+    "environmentConfigurationId": "fa7ca362-a88a-475e-a28d-8fd504471680"
+}
